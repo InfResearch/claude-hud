@@ -1,5 +1,16 @@
 import * as fs from 'node:fs';
+import * as path from 'node:path';
 const MAX_BALANCE_LABEL_LENGTH = 50;
+export const EXTERNAL_USAGE_WRITE_THROTTLE_MS = 30_000;
+const fsDeps = {
+    chmodSync: fs.chmodSync,
+    existsSync: fs.existsSync,
+    readFileSync: fs.readFileSync,
+    renameSync: fs.renameSync,
+    rmSync: fs.rmSync,
+    statSync: fs.statSync,
+    writeFileSync: fs.writeFileSync,
+};
 function parseUsagePercent(value) {
     if (typeof value !== 'number' || !Number.isFinite(value)) {
         return null;
@@ -43,6 +54,137 @@ function parseDateValue(value) {
 function parseUpdatedAt(value) {
     const date = parseDateValue(value);
     return date ? date.getTime() : null;
+}
+function snapshotFromUsage(usage, now) {
+    return {
+        updated_at: new Date(now).toISOString(),
+        five_hour: {
+            used_percentage: usage.fiveHour,
+            resets_at: usage.fiveHourResetAt?.toISOString() ?? null,
+        },
+        seven_day: {
+            used_percentage: usage.sevenDay,
+            resets_at: usage.sevenDayResetAt?.toISOString() ?? null,
+        },
+    };
+}
+function comparableSnapshot(snapshot) {
+    if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) {
+        return null;
+    }
+    const topLevelKeys = Object.keys(snapshot);
+    if (topLevelKeys.length !== 3
+        || !topLevelKeys.includes('updated_at')
+        || !topLevelKeys.includes('five_hour')
+        || !topLevelKeys.includes('seven_day')) {
+        return null;
+    }
+    const value = snapshot;
+    if (parseUpdatedAt(value.updated_at) === null) {
+        return null;
+    }
+    const fiveHour = comparableWindow(value.five_hour);
+    const sevenDay = comparableWindow(value.seven_day);
+    if (fiveHour === null || sevenDay === null) {
+        return null;
+    }
+    return {
+        five_hour: fiveHour,
+        seven_day: sevenDay,
+    };
+}
+function comparableWindow(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+        return null;
+    }
+    const keys = Object.keys(value);
+    if (keys.length !== 2
+        || !keys.includes('used_percentage')
+        || !keys.includes('resets_at')) {
+        return null;
+    }
+    const window = value;
+    const usedPercentage = parseUsagePercent(window.used_percentage);
+    if (window.used_percentage !== null && usedPercentage === null) {
+        return null;
+    }
+    const resetAt = parseDateValue(window.resets_at);
+    if (window.resets_at !== null && resetAt === null) {
+        return null;
+    }
+    return {
+        used_percentage: usedPercentage,
+        resets_at: resetAt?.toISOString() ?? null,
+    };
+}
+function shouldWriteSnapshot(snapshotPath, nextSnapshot, now, deps) {
+    try {
+        if (!deps.existsSync(snapshotPath)) {
+            return true;
+        }
+        const stats = deps.statSync(snapshotPath);
+        if (now - stats.mtimeMs > EXTERNAL_USAGE_WRITE_THROTTLE_MS) {
+            return true;
+        }
+        const current = JSON.parse(deps.readFileSync(snapshotPath, 'utf8'));
+        return JSON.stringify(comparableSnapshot(current)) !== JSON.stringify(comparableSnapshot(nextSnapshot));
+    }
+    catch {
+        return true;
+    }
+}
+function resolveSnapshotWritePath(snapshotPath) {
+    if (!path.isAbsolute(snapshotPath)) {
+        return null;
+    }
+    const parsed = path.parse(snapshotPath);
+    if (!parsed.base || parsed.ext.toLowerCase() !== '.json') {
+        return null;
+    }
+    return path.normalize(snapshotPath);
+}
+function directoryExists(dir, deps) {
+    try {
+        return deps.statSync(dir).isDirectory();
+    }
+    catch {
+        return false;
+    }
+}
+export function writeExternalUsageSnapshot(config, usage, now = Date.now(), deps = fsDeps) {
+    const snapshotPath = resolveSnapshotWritePath(config.display.externalUsageWritePath);
+    if (!snapshotPath || !usage) {
+        return false;
+    }
+    const snapshot = snapshotFromUsage(usage, now);
+    const dir = path.dirname(snapshotPath);
+    const base = path.basename(snapshotPath);
+    const tmpPath = path.join(dir, `.${base}.${process.pid}.${now}.${Math.random().toString(36).slice(2)}.tmp`);
+    try {
+        if (!directoryExists(dir, deps)) {
+            return false;
+        }
+        if (!shouldWriteSnapshot(snapshotPath, snapshot, now, deps)) {
+            return false;
+        }
+        deps.writeFileSync(tmpPath, `${JSON.stringify(snapshot, null, 2)}\n`, {
+            encoding: 'utf8',
+            mode: 0o600,
+            flag: 'wx',
+        });
+        deps.renameSync(tmpPath, snapshotPath);
+        deps.chmodSync(snapshotPath, 0o600);
+        return true;
+    }
+    catch {
+        try {
+            deps.rmSync(tmpPath, { force: true });
+        }
+        catch {
+            // Ignore cleanup errors; snapshot writes must not break rendering.
+        }
+        return false;
+    }
 }
 export function getUsageFromExternalSnapshot(config, now = Date.now()) {
     const snapshotPath = config.display.externalUsagePath;

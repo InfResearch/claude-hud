@@ -92,6 +92,7 @@ export interface HudConfig {
         sevenDayThreshold: number;
         environmentThreshold: number;
         externalUsagePath: string;
+        externalUsageWritePath: string;
         externalUsageFreshnessMs: number;
         modelFormat: ModelFormatMode;
         modelOverride: string;

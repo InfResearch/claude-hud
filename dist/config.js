@@ -76,6 +76,7 @@ export const DEFAULT_CONFIG = {
         sevenDayThreshold: 80,
         environmentThreshold: 0,
         externalUsagePath: '',
+        externalUsageWritePath: '',
         externalUsageFreshnessMs: 300000,
         modelFormat: 'full',
         modelOverride: '',
@@ -428,6 +429,7 @@ export function mergeConfig(userConfig) {
         sevenDayThreshold: validateThreshold(migrated.display?.sevenDayThreshold, 100),
         environmentThreshold: validateThreshold(migrated.display?.environmentThreshold, 100),
         externalUsagePath: validateOptionalPath(migrated.display?.externalUsagePath),
+        externalUsageWritePath: validateOptionalPath(migrated.display?.externalUsageWritePath),
         externalUsageFreshnessMs: validateFreshnessMs(migrated.display?.externalUsageFreshnessMs),
         modelFormat: validateModelFormat(migrated.display?.modelFormat)
             ? migrated.display.modelFormat
