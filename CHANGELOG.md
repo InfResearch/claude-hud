@@ -4,6 +4,18 @@ All notable changes to Claude HUD will be documented in this file.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-06-15
+
+### Added
+- Add opt-in session compaction count display from reliable transcript `compact_boundary` entries (#609).
+- Add `CLAUDE_HUD_DISABLE` as a per-session environment kill switch that exits before stdin, transcript, config, or git work (#610).
+
+### Changed
+- Sync `/claude-hud:configure` documentation with current display options, including compaction count, Skills, MCP, prompt cache, memory, cost, and reset-label controls (#613).
+
+### Dependencies
+- Bump `@types/node` from 25.9.2 to 25.9.3 (#614).
+
 ## [0.1.1] - 2026-06-09
 
 ### Added
