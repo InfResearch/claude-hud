@@ -87,6 +87,8 @@ export const DEFAULT_CONFIG = {
         externalUsageFreshnessMs: 300000,
         modelFormat: 'full',
         modelOverride: '',
+        showProvider: false,
+        providerName: '',
         customLine: '',
         customLinePosition: 'last',
         timeFormat: 'relative',
@@ -466,6 +468,12 @@ export function mergeConfig(userConfig) {
         modelOverride: typeof migrated.display?.modelOverride === 'string'
             ? migrated.display.modelOverride.slice(0, 80)
             : DEFAULT_CONFIG.display.modelOverride,
+        showProvider: typeof migrated.display?.showProvider === 'boolean'
+            ? migrated.display.showProvider
+            : DEFAULT_CONFIG.display.showProvider,
+        providerName: typeof migrated.display?.providerName === 'string'
+            ? migrated.display.providerName.slice(0, 40)
+            : DEFAULT_CONFIG.display.providerName,
         customLine: typeof migrated.display?.customLine === 'string'
             ? migrated.display.customLine.slice(0, 80)
             : DEFAULT_CONFIG.display.customLine,
