@@ -117,6 +117,8 @@ export interface SessionTokenUsage {
   cacheReadTokens: number;
 }
 
+export type ModelTokensMap = Record<string, SessionTokenUsage>;
+
 export interface TranscriptData {
   tools: ToolEntry[];
   skills: string[];
@@ -127,6 +129,7 @@ export interface TranscriptData {
   sessionName?: string;
   lastAssistantResponseAt?: Date;
   sessionTokens?: SessionTokenUsage;
+  modelTokens?: ModelTokensMap;
   lastCompactBoundaryAt?: Date;
   lastCompactPostTokens?: number;
   // Number of compact_boundary entries (manual /compact or auto compaction)

@@ -6,16 +6,26 @@ type ModelPricing = {
   outputUsdPerMillion: number;
 };
 
+type DeepSeekPricing = {
+  inputCnyPerMillion: number;
+  outputCnyPerMillion: number;
+  cacheHitCnyPerMillion: number;
+};
+
+export type Currency = 'USD' | 'CNY';
+
 export interface SessionCostEstimate {
-  totalUsd: number;
-  inputUsd: number;
-  cacheCreationUsd: number;
-  cacheReadUsd: number;
-  outputUsd: number;
+  totalAmount: number;
+  currency: Currency;
+  inputAmount: number;
+  cacheCreationAmount: number;
+  cacheReadAmount: number;
+  outputAmount: number;
 }
 
 export interface SessionCostDisplay {
-  totalUsd: number;
+  totalAmount: number;
+  currency: Currency;
   source: 'native' | 'estimate';
 }
 
@@ -40,6 +50,25 @@ const ANTHROPIC_MODEL_PRICING: Array<{ pattern: RegExp; pricing: ModelPricing }>
   { pattern: /\bhaikuplan\b/i, pricing: { inputUsdPerMillion: 0.8, outputUsdPerMillion: 4 } },
 ];
 
+// DeepSeek pricing in CNY per 1M tokens.
+// DeepSeek has a fundamentally different caching model from Anthropic:
+//   - cache MISS (input_tokens) → full input price
+//   - cache HIT  (cache_read_input_tokens) → heavily discounted price
+//   - No separate cache-creation billing (cache_creation_input_tokens is always 0).
+//
+// When Claude Code maps DeepSeek usage into Anthropic-style fields:
+//   input_tokens              ← prompt_cache_miss_tokens  (not cached)
+//   cache_read_input_tokens   ← prompt_cache_hit_tokens   (cache hits)
+//   cache_creation_input_tokens ← 0
+const DEEPSEEK_MODEL_PRICING: Array<{ pattern: RegExp; pricing: DeepSeekPricing }> = [
+  // Patterns use spaces because normalizeModelName replaces hyphens/underscores with spaces.
+  { pattern: /\bdeepseek v4 pro\b/i,   pricing: { inputCnyPerMillion: 3, outputCnyPerMillion: 6, cacheHitCnyPerMillion: 0.025 } },
+  { pattern: /\bdeepseek v4 flash\b/i,  pricing: { inputCnyPerMillion: 1, outputCnyPerMillion: 2, cacheHitCnyPerMillion: 0.02 } },
+  // Legacy model name aliases (deprecated 2026/07/24, map to Flash)
+  { pattern: /\bdeepseek chat\b/i,      pricing: { inputCnyPerMillion: 1, outputCnyPerMillion: 2, cacheHitCnyPerMillion: 0.02 } },
+  { pattern: /\bdeepseek reasoner\b/i,  pricing: { inputCnyPerMillion: 1, outputCnyPerMillion: 2, cacheHitCnyPerMillion: 0.02 } },
+];
+
 function normalizeModelName(modelName: string): string {
   return modelName
     .toLowerCase()
@@ -60,8 +89,25 @@ function matchAnthropicPricing(modelName: string): ModelPricing | null {
   return null;
 }
 
-function calculateUsd(tokens: number, usdPerMillion: number): number {
-  return (tokens * usdPerMillion) / TOKENS_PER_MILLION;
+export function isDeepSeekModelId(modelId?: string): boolean {
+  if (!modelId) {
+    return false;
+  }
+  return /deepseek/i.test(modelId);
+}
+
+function matchDeepSeekPricing(modelName: string): DeepSeekPricing | null {
+  const normalized = normalizeModelName(modelName);
+  for (const entry of DEEPSEEK_MODEL_PRICING) {
+    if (entry.pattern.test(normalized)) {
+      return entry.pricing;
+    }
+  }
+  return null;
+}
+
+function calculateAmount(tokens: number, amountPerMillion: number): number {
+  return (tokens * amountPerMillion) / TOKENS_PER_MILLION;
 }
 
 function getAnthropicPricing(stdin: StdinData): ModelPricing | null {
@@ -84,6 +130,86 @@ function getAnthropicPricing(stdin: StdinData): ModelPricing | null {
   return null;
 }
 
+function getDeepSeekPricing(stdin: StdinData): DeepSeekPricing | null {
+  const candidates = [
+    stdin.model?.display_name?.trim(),
+    stdin.model?.id?.trim(),
+  ];
+
+  for (const candidate of candidates) {
+    if (!candidate) {
+      continue;
+    }
+
+    const pricing = matchDeepSeekPricing(candidate);
+    if (pricing) {
+      return pricing;
+    }
+  }
+
+  return null;
+}
+
+function estimateDeepSeekSessionCost(
+  sessionTokens: SessionTokenUsage,
+  pricing: DeepSeekPricing,
+): SessionCostEstimate | null {
+  const totalTokens = sessionTokens.inputTokens
+    + sessionTokens.cacheReadTokens
+    + sessionTokens.outputTokens;
+  if (totalTokens === 0) {
+    return null;
+  }
+
+  // DeepSeek token semantics (as mapped by Claude Code into Anthropic fields):
+  //   input_tokens              = cache MISS (full input price)
+  //   cache_read_input_tokens   = cache HIT  (discounted cache price)
+  //   cache_creation_input_tokens = 0 (no separate creation billing)
+  const inputAmount = calculateAmount(sessionTokens.inputTokens, pricing.inputCnyPerMillion);
+  const cacheReadAmount = calculateAmount(sessionTokens.cacheReadTokens, pricing.cacheHitCnyPerMillion);
+  const outputAmount = calculateAmount(sessionTokens.outputTokens, pricing.outputCnyPerMillion);
+
+  return {
+    totalAmount: inputAmount + cacheReadAmount + outputAmount,
+    currency: 'CNY',
+    inputAmount,
+    cacheCreationAmount: 0,
+    cacheReadAmount,
+    outputAmount,
+  };
+}
+
+function estimateAnthropicSessionCost(
+  sessionTokens: SessionTokenUsage,
+  pricing: ModelPricing,
+): SessionCostEstimate | null {
+  const totalTokens = sessionTokens.inputTokens
+    + sessionTokens.cacheCreationTokens
+    + sessionTokens.cacheReadTokens
+    + sessionTokens.outputTokens;
+  if (totalTokens === 0) {
+    return null;
+  }
+
+  // Anthropic token semantics:
+  //   input_tokens              = ALL input (includes both cached and uncached)
+  //   cache_creation_input_tokens = new cache entries (1.25× input price)
+  //   cache_read_input_tokens   = cache hits (0.1× input price)
+  const inputAmount = calculateAmount(sessionTokens.inputTokens, pricing.inputUsdPerMillion);
+  const cacheCreationAmount = calculateAmount(sessionTokens.cacheCreationTokens, pricing.inputUsdPerMillion * CACHE_WRITE_MULTIPLIER);
+  const cacheReadAmount = calculateAmount(sessionTokens.cacheReadTokens, pricing.inputUsdPerMillion * CACHE_READ_MULTIPLIER);
+  const outputAmount = calculateAmount(sessionTokens.outputTokens, pricing.outputUsdPerMillion);
+
+  return {
+    totalAmount: inputAmount + cacheCreationAmount + cacheReadAmount + outputAmount,
+    currency: 'USD',
+    inputAmount,
+    cacheCreationAmount,
+    cacheReadAmount,
+    outputAmount,
+  };
+}
+
 export function estimateSessionCost(
   stdin: StdinData,
   sessionTokens: SessionTokenUsage | undefined,
@@ -100,11 +226,6 @@ export function estimateSessionCost(
     return null;
   }
 
-  const pricing = getAnthropicPricing(stdin);
-  if (!pricing) {
-    return null;
-  }
-
   const totalTokens = sessionTokens.inputTokens
     + sessionTokens.cacheCreationTokens
     + sessionTokens.cacheReadTokens
@@ -113,18 +234,19 @@ export function estimateSessionCost(
     return null;
   }
 
-  const inputUsd = calculateUsd(sessionTokens.inputTokens, pricing.inputUsdPerMillion);
-  const cacheCreationUsd = calculateUsd(sessionTokens.cacheCreationTokens, pricing.inputUsdPerMillion * CACHE_WRITE_MULTIPLIER);
-  const cacheReadUsd = calculateUsd(sessionTokens.cacheReadTokens, pricing.inputUsdPerMillion * CACHE_READ_MULTIPLIER);
-  const outputUsd = calculateUsd(sessionTokens.outputTokens, pricing.outputUsdPerMillion);
+  // Try DeepSeek pricing first (more specific match)
+  const deepSeekPricing = getDeepSeekPricing(stdin);
+  if (deepSeekPricing) {
+    return estimateDeepSeekSessionCost(sessionTokens, deepSeekPricing);
+  }
 
-  return {
-    totalUsd: inputUsd + cacheCreationUsd + cacheReadUsd + outputUsd,
-    inputUsd,
-    cacheCreationUsd,
-    cacheReadUsd,
-    outputUsd,
-  };
+  // Fall back to Anthropic pricing
+  const anthropicPricing = getAnthropicPricing(stdin);
+  if (anthropicPricing) {
+    return estimateAnthropicSessionCost(sessionTokens, anthropicPricing);
+  }
+
+  return null;
 }
 
 function getNativeCostUsd(stdin: StdinData): number | null {
@@ -148,10 +270,27 @@ export function resolveSessionCost(
   stdin: StdinData,
   sessionTokens: SessionTokenUsage | undefined,
 ): SessionCostDisplay | null {
+  // DeepSeek: always use the estimate path so currency is ¥ (CNY).
+  // Claude Code's native cost is always in USD regardless of provider,
+  // but DeepSeek's official pricing is denominated in CNY.
+  if (isDeepSeekModelId(stdin.model?.id) || isDeepSeekModelId(stdin.model?.display_name)) {
+    const estimate = estimateSessionCost(stdin, sessionTokens);
+    if (estimate) {
+      return {
+        totalAmount: estimate.totalAmount,
+        currency: estimate.currency,
+        source: 'estimate',
+      };
+    }
+    return null;
+  }
+
+  // Anthropic / other providers: prefer native cost (USD).
   const nativeCostUsd = getNativeCostUsd(stdin);
   if (nativeCostUsd !== null) {
     return {
-      totalUsd: nativeCostUsd,
+      totalAmount: nativeCostUsd,
+      currency: 'USD',
       source: 'native',
     };
   }
@@ -162,17 +301,24 @@ export function resolveSessionCost(
   }
 
   return {
-    totalUsd: estimate.totalUsd,
+    totalAmount: estimate.totalAmount,
+    currency: estimate.currency,
     source: 'estimate',
   };
 }
 
-export function formatUsd(amount: number): string {
+export function formatCost(amount: number, currency: Currency): string {
+  const symbol = currency === 'CNY' ? '¥' : '$';
   if (amount >= 1) {
-    return `$${amount.toFixed(2)}`;
+    return `${symbol}${amount.toFixed(2)}`;
   }
   if (amount >= 0.1) {
-    return `$${amount.toFixed(3)}`;
+    return `${symbol}${amount.toFixed(3)}`;
   }
-  return `$${amount.toFixed(4)}`;
+  return `${symbol}${amount.toFixed(4)}`;
+}
+
+/** @deprecated Use formatCost(amount, 'USD') instead. */
+export function formatUsd(amount: number): string {
+  return formatCost(amount, 'USD');
 }

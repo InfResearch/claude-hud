@@ -5,7 +5,7 @@ import { getModelName, formatModelName } from '../../stdin.js';
 import { getOutputSpeed } from '../../speed-tracker.js';
 import { git as gitColor, gitBranch as gitBranchColor, warning as warningColor, critical as criticalColor, label, model as modelColor, project as projectColor, red, green, yellow, dim, custom as customColor } from '../colors.js';
 import { t } from '../../i18n/index.js';
-import { renderCostEstimate } from './cost.js';
+
 import { renderAdvisorLine } from './advisor.js';
 import { normalizeAddedDirs, sanitize as sanitizeDisplayText, basenameOf, truncateBasename, MAX_RENDERED_ADDED_DIRS } from './added-dirs.js';
 import { hyperlink, getFileHref, safeHyperlink } from '../../utils/hyperlinks.js';
@@ -137,11 +137,6 @@ export function renderProjectLine(ctx: RenderContext): string | null {
 
   if (display?.showDuration !== false && ctx.sessionDuration) {
     parts.push(label(`⏱️  ${ctx.sessionDuration}`, colors));
-  }
-
-  const costEstimate = renderCostEstimate(ctx);
-  if (costEstimate) {
-    parts.push(costEstimate);
   }
 
   if (display?.showSpeed) {

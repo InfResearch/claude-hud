@@ -403,7 +403,8 @@ test('resolveSessionCost prefers native stdin cost when available', () => {
   );
 
   assert.deepEqual(cost, {
-    totalUsd: 1.23,
+    totalAmount: 1.23,
+    currency: 'USD',
     source: 'native',
   });
 });
@@ -421,7 +422,7 @@ test('resolveSessionCost falls back to transcript estimation when native cost is
 
   assert.ok(cost, 'expected fallback estimate');
   assert.equal(cost?.source, 'estimate');
-  assert.equal(formatUsd(cost?.totalUsd ?? 0), '$1.82');
+  assert.equal(formatUsd(cost?.totalAmount ?? 0), '$1.82');
 });
 
 test('resolveSessionCost ignores native cost for provider-routed sessions', () => {
@@ -462,7 +463,7 @@ test('resolveSessionCost falls back when native cost is invalid', () => {
 
   assert.ok(cost, 'expected fallback estimate');
   assert.equal(cost?.source, 'estimate');
-  assert.equal(formatUsd(cost?.totalUsd ?? 0), '$1.09');
+  assert.equal(formatUsd(cost?.totalAmount ?? 0), '$1.09');
 });
 
 test('estimateSessionCost still calculates transcript-based Anthropic pricing', () => {
@@ -477,7 +478,7 @@ test('estimateSessionCost still calculates transcript-based Anthropic pricing', 
   );
 
   assert.ok(estimate, 'expected transcript estimate');
-  assert.equal(formatUsd(estimate.totalUsd), '$1.09');
+  assert.equal(formatUsd(estimate.totalAmount), '$1.09');
 });
 
 test('estimateSessionCost prices Claude Haiku 4.5 (and future 4.x minors)', () => {
@@ -491,18 +492,18 @@ test('estimateSessionCost prices Claude Haiku 4.5 (and future 4.x minors)', () =
   const haiku45 = estimateSessionCost({ model: { display_name: 'Claude Haiku 4.5' } }, tokens);
   assert.ok(haiku45, 'expected non-null estimate for Claude Haiku 4.5');
   // 1M input @ $1 + 100k output @ $5 = $1 + $0.5 = $1.50
-  assert.equal(formatUsd(haiku45.totalUsd), '$1.50');
+  assert.equal(formatUsd(haiku45.totalAmount), '$1.50');
 
   // Bare "Haiku 4" (short name) should also match.
   const haiku4Bare = estimateSessionCost({ model: { display_name: 'Claude Haiku 4' } }, tokens);
   assert.ok(haiku4Bare, 'expected non-null estimate for bare Claude Haiku 4');
-  assert.equal(formatUsd(haiku4Bare.totalUsd), '$1.50');
+  assert.equal(formatUsd(haiku4Bare.totalAmount), '$1.50');
 
   // Haiku 3.5 pricing stays on its own row.
   const haiku35 = estimateSessionCost({ model: { display_name: 'Claude Haiku 3.5' } }, tokens);
   assert.ok(haiku35, 'expected non-null estimate for Claude Haiku 3.5');
   // 1M input @ $0.8 + 100k output @ $4 = $0.8 + $0.4 = $1.20
-  assert.equal(formatUsd(haiku35.totalUsd), '$1.20');
+  assert.equal(formatUsd(haiku35.totalAmount), '$1.20');
 });
 
 test('estimateSessionCost prices newer Opus 4 models below the Opus 4.0 and 4.1 fallback', () => {
@@ -515,22 +516,22 @@ test('estimateSessionCost prices newer Opus 4 models below the Opus 4.0 and 4.1 
 
   const opus45 = estimateSessionCost({ model: { display_name: 'Claude Opus 4.5' } }, tokens);
   assert.ok(opus45, 'expected non-null estimate for Claude Opus 4.5');
-  assert.equal(formatUsd(opus45.totalUsd), '$7.50');
+  assert.equal(formatUsd(opus45.totalAmount), '$7.50');
 
   const opus46 = estimateSessionCost({ model: { display_name: 'Claude Opus 4.6' } }, tokens);
   assert.ok(opus46, 'expected non-null estimate for Claude Opus 4.6');
-  assert.equal(formatUsd(opus46.totalUsd), '$7.50');
+  assert.equal(formatUsd(opus46.totalAmount), '$7.50');
 
   // Tests that Bedrock-style strings in display_name are normalized correctly.
   // Real Bedrock sessions set model.id (triggering isBedrockModelId → null),
   // so this exercises the regex normalization path, not real Bedrock pricing.
   const bedrockOpus46 = estimateSessionCost({ model: { display_name: 'eu.anthropic.claude-opus-4-6-v1:0' } }, tokens);
   assert.ok(bedrockOpus46, 'expected model ID normalization to match Claude Opus 4.6');
-  assert.equal(formatUsd(bedrockOpus46.totalUsd), '$7.50');
+  assert.equal(formatUsd(bedrockOpus46.totalAmount), '$7.50');
 
   const opus41 = estimateSessionCost({ model: { display_name: 'Claude Opus 4.1' } }, tokens);
   assert.ok(opus41, 'expected non-null estimate for Claude Opus 4.1');
-  assert.equal(formatUsd(opus41.totalUsd), '$22.50');
+  assert.equal(formatUsd(opus41.totalAmount), '$22.50');
 });
 
 test('estimateSessionCost returns null for real Bedrock sessions with model.id set', () => {

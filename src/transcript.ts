@@ -22,6 +22,8 @@ interface TranscriptLine {
   // set. Holds the canonical advisor model ID (e.g. "claude-opus-4-7").
   advisorModel?: string;
   message?: {
+    id?: string;
+    model?: string;
     content?: ContentBlock[];
     usage?: {
       input_tokens?: number;
@@ -72,6 +74,7 @@ interface SerializedTranscriptData {
   sessionName?: string;
   lastAssistantResponseAt?: string;
   sessionTokens?: SessionTokenUsage;
+  modelTokens?: Record<string, SessionTokenUsage>;
   lastCompactBoundaryAt?: string;
   lastCompactPostTokens?: number;
   compactionCount?: number;
@@ -117,6 +120,20 @@ function normalizeSessionTokens(tokens: unknown): SessionTokenUsage | undefined 
     cacheCreationTokens: normalizeTokenCount(raw.cacheCreationTokens),
     cacheReadTokens: normalizeTokenCount(raw.cacheReadTokens),
   };
+}
+
+function deserializeModelTokens(data: unknown): Record<string, SessionTokenUsage> | undefined {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) {
+    return undefined;
+  }
+  const map: Record<string, SessionTokenUsage> = {};
+  for (const [key, value] of Object.entries(data as Record<string, unknown>)) {
+    const normalized = normalizeSessionTokens(value);
+    if (normalized) {
+      map[key] = normalized;
+    }
+  }
+  return Object.keys(map).length > 0 ? map : undefined;
 }
 
 function normalizeNameList(value: unknown): string[] {
@@ -206,6 +223,7 @@ function serializeTranscriptData(data: TranscriptData): SerializedTranscriptData
     sessionName: data.sessionName,
     lastAssistantResponseAt: data.lastAssistantResponseAt?.toISOString(),
     sessionTokens: data.sessionTokens,
+    modelTokens: data.modelTokens,
     lastCompactBoundaryAt: data.lastCompactBoundaryAt?.toISOString(),
     lastCompactPostTokens: data.lastCompactPostTokens,
     compactionCount: data.compactionCount,
@@ -232,6 +250,7 @@ function deserializeTranscriptData(data: SerializedTranscriptData): TranscriptDa
     sessionName: data.sessionName,
     lastAssistantResponseAt: data.lastAssistantResponseAt ? new Date(data.lastAssistantResponseAt) : undefined,
     sessionTokens: normalizeSessionTokens(data.sessionTokens),
+    modelTokens: deserializeModelTokens(data.modelTokens),
     lastCompactBoundaryAt: data.lastCompactBoundaryAt ? new Date(data.lastCompactBoundaryAt) : undefined,
     lastCompactPostTokens: typeof data.lastCompactPostTokens === 'number' ? data.lastCompactPostTokens : undefined,
     compactionCount: typeof data.compactionCount === 'number' && Number.isFinite(data.compactionCount) && data.compactionCount >= 0
@@ -340,7 +359,8 @@ export async function parseTranscript(transcriptPath: string): Promise<Transcrip
     cacheCreationTokens: 0,
     cacheReadTokens: 0,
   };
-  let lastUsageKey: string | undefined;
+  const modelTokens: Record<string, SessionTokenUsage> = {};
+  const seenMessageIds = new Set<string>();
 
   let parsedCleanly = false;
 
@@ -353,7 +373,7 @@ export async function parseTranscript(transcriptPath: string): Promise<Transcrip
 
     for await (const line of rl) {
       if (!line.trim()) {
-        lastUsageKey = undefined;
+        // (message.id dedup — no reset needed)
         continue;
       }
 
@@ -378,20 +398,32 @@ export async function parseTranscript(transcriptPath: string): Promise<Transcrip
           latestAdvisorModel = entry.advisorModel.slice(0, ADVISOR_MODEL_MAX_LEN);
         }
         // Accumulate token usage from assistant messages.
-        // Claude Code can write the same API response to the transcript 2-3 times
-        // consecutively (dual-logging). Skip consecutive duplicates to avoid inflating counts.
-        if (entry.type === 'assistant' && entry.message?.usage) {
-          const usage = entry.message.usage;
-          const key = `${usage.input_tokens}|${usage.output_tokens}|${usage.cache_creation_input_tokens}|${usage.cache_read_input_tokens}`;
-          if (key !== lastUsageKey) {
-            sessionTokens.inputTokens += normalizeTokenCount(usage.input_tokens);
-            sessionTokens.outputTokens += normalizeTokenCount(usage.output_tokens);
-            sessionTokens.cacheCreationTokens += normalizeTokenCount(usage.cache_creation_input_tokens);
-            sessionTokens.cacheReadTokens += normalizeTokenCount(usage.cache_read_input_tokens);
+        // Claude Code can write the same API response to the transcript 2-5 times
+        // (dual-logging). Deduplicate by message.id — each unique message ID
+        // represents one real API call. Skip records without a message ID.
+        if (entry.type === 'assistant' && entry.message?.usage && entry.message?.id) {
+          const msgId = entry.message.id;
+          if (!seenMessageIds.has(msgId)) {
+            seenMessageIds.add(msgId);
+            const usage = entry.message.usage;
+            const inTokens = normalizeTokenCount(usage.input_tokens);
+            const outTokens = normalizeTokenCount(usage.output_tokens);
+            const ccTokens = normalizeTokenCount(usage.cache_creation_input_tokens);
+            const crTokens = normalizeTokenCount(usage.cache_read_input_tokens);
+            sessionTokens.inputTokens += inTokens;
+            sessionTokens.outputTokens += outTokens;
+            sessionTokens.cacheCreationTokens += ccTokens;
+            sessionTokens.cacheReadTokens += crTokens;
+            // Per-model accumulation
+            const modelName = entry.message?.model?.trim() || 'unknown';
+            if (!modelTokens[modelName]) {
+              modelTokens[modelName] = { inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0 };
+            }
+            modelTokens[modelName].inputTokens += inTokens;
+            modelTokens[modelName].outputTokens += outTokens;
+            modelTokens[modelName].cacheCreationTokens += ccTokens;
+            modelTokens[modelName].cacheReadTokens += crTokens;
           }
-          lastUsageKey = key;
-        } else {
-          lastUsageKey = undefined;
         }
         // Track Claude Code's compact_boundary marker. Both manual (/compact)
         // and auto compaction emit this system entry with compactMetadata; we
@@ -425,7 +457,7 @@ export async function parseTranscript(transcriptPath: string): Promise<Transcrip
         }
         processEntry(entry, toolMap, skillSet, mcpServerSet, agentMap, taskIdToIndex, latestTodos, result);
       } catch (err) {
-        lastUsageKey = undefined;
+        // (message.id dedup — no reset needed)
         debug('Skipping malformed transcript line:', err instanceof Error ? err.message : err);
       }
     }
@@ -457,6 +489,7 @@ export async function parseTranscript(transcriptPath: string): Promise<Transcrip
   result.todos = latestTodos;
   result.sessionName = customTitle ?? latestSlug;
   result.sessionTokens = sessionTokens;
+  result.modelTokens = modelTokens;
   result.lastCompactBoundaryAt = lastCompactBoundaryAt;
   result.lastCompactPostTokens = lastCompactPostTokens;
   result.compactionCount = compactionCount;

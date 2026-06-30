@@ -9,6 +9,7 @@ import { t } from "../../i18n/index.js";
 import { progressLabel } from "./label-align.js";
 import { formatTokens, formatContextValue } from "../../utils/format.js";
 import { createDebug } from "../../debug.js";
+import { renderCostEstimate } from "./cost.js";
 
 const debug = createDebug("context");
 
@@ -56,6 +57,12 @@ export function renderIdentityLine(
         colors,
       );
     }
+  }
+
+  // Cost estimate inlined after context
+  const costEstimate = renderCostEstimate(ctx);
+  if (costEstimate) {
+    line += ` │ ${costEstimate}`;
   }
 
   return line;
